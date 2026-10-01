@@ -10,3 +10,4 @@ plotly
 networkx
 tqdm
 joblib
+geopy

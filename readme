@@ -1,0 +1,86 @@
+Análise Regional de Doenças e Predição de Permanência Hospitalar Utilizando Machine Learning em Dados do SUS
+
+Trabalho Final de Graduação — Projetos Empreendedores em Ciência de Dados e Inteligência Artificial[cite: 2].
+Instituição: PUC-Campinas[cite: 1, 2].
+Autores: Lucas Bastos, Matheus Elias e Paulo Marcos Costa[cite: 1, 2].
+
+================================================================================
+1. VISAO GERAL DO PROJETO
+================================================================================
+Este projeto de Ciência de Dados tem como objetivo analisar o Sistema de Informações Hospitalares (SIH/DATASUS) para extrair padrões e desenvolver modelos preditivos sobre internamentos no sistema público de saúde[cite: 1, 2]. 
+
+O trabalho está estruturado em dois pilares analíticos:
+- Pilar 1 (Permanência Hospitalar): Modelagem de regressão para responder quantos dias um paciente respiratório ficará internado[cite: 1, 2]. Inclui a investigação se o bairro de residência em Campinas influencia o tempo de internamento através de testes estatísticos (Kruskal-Wallis) e estudos de ablação[cite: 1].
+- Pilar 2 (Evasão Hospitalar): Modelagem de classificação e análise de redes para prever se o paciente é atendido fora do seu município[cite: 1, 2]. O fluxo intermunicipal é mapeado para identificar sobrecarga nas rotas hospitalares[cite: 1].
+
+================================================================================
+2. ESCOPO DOS DADOS
+================================================================================
+- Filtro Clínico: Restrito ao Capítulo J da CID-10 (Doenças do Aparelho Respiratório)[cite: 1, 2]. 
+- Recorte Geográfico: Região Metropolitana de Campinas (RMC), abrangendo 20 municípios[cite: 1, 2]. Os códigos dos municípios são resolvidos dinamicamente por nome através da API do IBGE[cite: 1, 2].
+- Recorte Temporal: Dados entre 2022 e 2025[cite: 1, 2].
+- Volume Analisado: Base final focada em casos respiratórios na RMC consolidou 54.919 internamentos válidos[cite: 2].
+
+================================================================================
+3. ARQUITETURA DO PIPELINE DE DADOS
+================================================================================
+O projeto segue uma arquitetura de dados em camadas desenhada para otimização de memória[cite: 1, 2]:
+
+- Camada Raw: Ficheiros .parquet mensais originais do SIH/DATASUS[cite: 1, 2].
+- Camada Silver (Ingestão Eficiente): Os filtros (Ano, Município RMC, CID J, deduplicação por N_AIH e remoção de outliers) são aplicados durante a leitura em lotes[cite: 1, 2].
+- Camada Gold (Feature Engineering): Geração de novas variáveis como FAIXA_ETARIA, ESTACAO climática e SUBCATEGORIA_CID[cite: 1, 2]. Criação da variável ATENDIDO_FORA comparando município de residência e movimento[cite: 1, 2]. Enriquecimento via API ViaCEP com sistema de cache[cite: 1, 2].
+- Data Splits: Para Machine Learning, os óbitos são removidos para evitar viés de seleção[cite: 1, 2]. O split Treino/Teste é estritamente temporal (Treino: 2022-2024, Teste: 2025) para evitar vazamento de dados[cite: 1].
+
+================================================================================
+4. RESULTADOS E MODELAGEM
+================================================================================
+Pilar 1: Previsão de Dias de Permanência
+- O HistGradientBoosting venceu com um MAE de 4.223 e RMSE de 6.651, representando um ganho de 7,7% sobre a predição pela média[cite: 1].
+- O R2 de 0.085 comprova que variáveis puramente demográficas e administrativas disponíveis na admissão têm poder preditivo limitado, justificando a necessidade de prontuários eletrónicos[cite: 1].
+
+Pilar 2: Classificação e Fluxo de Evasão
+- A taxa geral de evasão na amostra é de 16,5%[cite: 1, 2].
+- Modelos de Regressão Logística e Random Forest Classifier foram treinados com peso de classes balanceado[cite: 1, 2].
+- O Random Forest atingiu uma AUC-ROC de 0.683 e Recall da classe de Evasão de 0.46 no teste de 2025[cite: 1]. A concordância inter-modelos foi de Kappa = 0.821[cite: 1].
+
+================================================================================
+5. ESTRUTURA DE DIRETORIOS E MODULOS
+================================================================================
+tcc_datasus/
+|-- data/
+|   |-- raw/                        (Parquets originais do SIH/DATASUS)
+|   |-- processed/                  (Dados gerados: gold_resp_ml.parquet e gold_resp_eda.parquet)
+|-- utils.py                        (Funções de engenharia de features e padronização)
+|-- data_pipeline.py                (Orquestra ingestão, filtros, cache do ViaCEP e a camada Gold)
+|-- permanencia_model.py            (Treino e avaliação da regressão do tempo de internamento)
+|-- evasao_model.py                 (Treino da classificação e preparação dos dados de fluxo OD)
+|-- dashboard.py                    (Aplicação Streamlit com Mapas Plotly de Fluxo de Evasão)
+|-- main.py                         (Orquestrador CLI para execução de etapas específicas)
+|-- requirements.txt                (Dependências do projeto)
+
+================================================================================
+6. STACK TECNOLOGICA
+================================================================================
+- Engenharia de Dados: pandas, numpy, pyarrow, requests[cite: 1, 2].
+- Machine Learning: scikit-learn[cite: 1, 2].
+- Estatística e Redes: statsmodels, networkx[cite: 1, 2].
+- Visualização Web: streamlit, plotly[cite: 1, 2].
+
+================================================================================
+7. COMO EXECUTAR O PROJETO
+================================================================================
+Passo 1: Instalar dependências
+> pip install -r requirements.txt
+
+Passo 2: Gerar bases de dados (certifique-se de que os parquets estão em data/raw/)
+> python main.py --step pipeline
+
+Passo 3: Treinar modelos
+> python main.py --step permanencia
+> python main.py --step evasao
+
+passo 4: mapa de calor bairros
+> python geocoding_bairros.py
+
+Passo 5: Visualizar Mapa Interativo de Fluxo (Dashboard)
+> streamlit run dashboard.py

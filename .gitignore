@@ -1,0 +1,15 @@
+# Ambientes Virtuais Python
+.venv/
+venv/
+env/
+
+# Ficheiros de Cache
+__pycache__/
+*.pyc
+
+# Dados Brutos e Processados (Nunca faça commit de bases de dados pesadas)
+data/
+TCC_Datasus/data/
+
+# Imagens exportadas
+plots/
