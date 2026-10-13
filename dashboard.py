@@ -3,8 +3,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
 import os
-import unicodedata
 import numpy as np
+from utils import MUNICIPIOS_RMC_NORMALIZADOS, normalizar_nome
 
 # =========================================================
 # CONFIGURAÇÕES INICIAIS
@@ -44,21 +44,31 @@ def carregar_dados():
     return pd.read_parquet(caminho)
 
 @st.cache_data
+def carregar_fluxo_saidas():
+    caminho = './TCC_Datasus/data/processed/gold_resp_fluxo.parquet'
+    if not os.path.exists(caminho):
+        return pd.DataFrame()
+    return pd.read_parquet(caminho)
+
+@st.cache_data
 def carregar_coords_bairros():
     caminho = './TCC_Datasus/data/processed/coords_bairros_campinas.csv'
     if os.path.exists(caminho):
         return pd.read_csv(caminho)
     return pd.DataFrame()
 
-def normalizar(s):
-    if not isinstance(s, str): return s
-    return unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii').upper().strip()
-
 df = carregar_dados()
+fluxo_saidas = carregar_fluxo_saidas()
 
 if not df.empty:
-    df['MUN_RES_NORM'] = df['NOME_MUNIC_RES'].apply(normalizar)
-    df['MUN_ATEND_NORM'] = df['NOME_MUNIC_ATENDIMENTO'].apply(normalizar)
+    df['MUN_RES_NORM'] = df['NOME_MUNIC_RES'].apply(normalizar_nome)
+    df['MUN_ATEND_NORM'] = df['NOME_MUNIC_ATENDIMENTO'].apply(normalizar_nome)
+    atendimento_na_rmc = df['MUN_ATEND_NORM'].isin(MUNICIPIOS_RMC_NORMALIZADOS)
+    df_rmc_atendimento = df[atendimento_na_rmc].copy()
+    total_saidas = (
+        int(pd.to_numeric(fluxo_saidas.get('INTERNACOES_FORA_RMC', pd.Series(dtype=float)), errors='coerce').fillna(0).sum())
+        if not fluxo_saidas.empty else 0
+    )
     
     aba_evasao, aba_incidencia = st.tabs(["🚑 Fluxo e Evasão Hospitalar", "🔥 Monitoramento Epidemiológico e Calor"])
 
@@ -66,21 +76,31 @@ if not df.empty:
     # ABA 1: FLUXO DE EVASÃO
     # =========================================================
     with aba_evasao:
-        st.title("🗺️ Mapa de Fluxo de Evasão na RMC")
+        st.title("🗺️ Deslocamentos para atendimento na RMC")
+        if fluxo_saidas.empty:
+            st.info("Execute o pipeline atualizado para gerar a contagem agregada de saídas da RMC.")
+
+        total_com_local = len(df_rmc_atendimento) + total_saidas
+        percentual_saidas = total_saidas / total_com_local if total_com_local else 0
+        k_saida, k_percentual = st.columns(2)
+        k_saida.metric("Internações de moradores da RMC atendidas fora", f"{total_saidas:,}".replace(',', '.'))
+        k_percentual.metric("Percentual entre atendimentos com local conhecido", f"{percentual_saidas:.1%}")
+        st.caption("Os destinos externos são contabilizados em conjunto; o dashboard não informa em quais municípios ocorreram.")
         
         col1, col2 = st.columns(2)
         with col1:
             min_pacientes = st.slider("Esconder rotas com menos de X pacientes:", min_value=1, max_value=500, value=20)
         with col2:
-            foco_direcao = st.radio("Isolar Direção do Fluxo (Mapa):", ["Ver Toda a Rede", "Destino: Internados EM Campinas", "Origem: Saíram DE Campinas"])
+            foco_direcao = st.radio("Filtrar fluxos internos da RMC:", ["Ver Toda a Rede", "Destino: atendimento em Campinas", "Origem: saídas de Campinas para outra cidade da RMC"])
 
-        df_evasao = df[df['ATENDIDO_FORA'] == 1].copy()
+        # O mapa e as rotas mostram somente deslocamentos entre municípios da RMC.
+        df_evasao = df_rmc_atendimento[df_rmc_atendimento['ATENDIDO_FORA'] == 1].copy()
         fluxo = df_evasao.groupby(['MUN_RES_NORM', 'MUN_ATEND_NORM']).size().reset_index(name='TOTAL')
         
         fluxo_mapa = fluxo[fluxo['TOTAL'] >= min_pacientes]
-        if foco_direcao == "Destino: Internados EM Campinas":
+        if foco_direcao == "Destino: atendimento em Campinas":
             fluxo_mapa = fluxo_mapa[fluxo_mapa['MUN_ATEND_NORM'] == 'CAMPINAS']
-        elif foco_direcao == "Origem: Saíram DE Campinas":
+        elif foco_direcao == "Origem: saídas de Campinas para outra cidade da RMC":
             fluxo_mapa = fluxo_mapa[fluxo_mapa['MUN_RES_NORM'] == 'CAMPINAS']
 
         fig_fluxo = go.Figure()
@@ -132,7 +152,7 @@ if not df.empty:
 
         st.plotly_chart(fig_fluxo, use_container_width=True)
 
-        st.subheader("📋 As Maiores Rotas de Evasão (Origem ➔ Destino)")
+        st.subheader("📋 Principais deslocamentos entre municípios da RMC")
         tabela_rotas = fluxo.sort_values('TOTAL', ascending=False).reset_index(drop=True)
         tabela_rotas.index = [f"{i+1}º" for i in range(len(tabela_rotas))]
         tabela_rotas = tabela_rotas.rename(columns={'MUN_RES_NORM': 'Cidade de Origem (Saiu de)', 'MUN_ATEND_NORM': 'Cidade de Destino (Foi para)', 'TOTAL': 'Total de Pacientes'})
@@ -156,30 +176,46 @@ if not df.empty:
             tabela_destino = tabela_destino.rename(columns={'MUN_ATEND_NORM': 'Cidade Receptora', 'TOTAL': 'Total Recebidos'})
             st.dataframe(tabela_destino, use_container_width=True)
 
-        # --- Gráfico de Linhas Geral de Evasão ---
+        # --- Evolução dos deslocamentos dentro e para fora da RMC ---
         st.divider()
-        st.subheader("📈 Evolução Geral da Evasão na RMC")
+        st.subheader("📈 Deslocamentos dentro da RMC e saídas da região")
         
         evol_total_evasao = df_evasao.groupby('ANO_CMPT').size().reset_index(name='TOTAL')
         fig_evol_evasao = px.line(evol_total_evasao, x='ANO_CMPT', y='TOTAL', markers=True, text='TOTAL',
-                                  labels={'ANO_CMPT': 'Ano', 'TOTAL': 'Total de Evasões'})
+                                  labels={'ANO_CMPT': 'Ano', 'TOTAL': 'Deslocamentos entre municípios da RMC'})
         
         fig_evol_evasao.update_traces(textposition="top center", line_color='#ff4b4b', line_width=4, marker_size=10, textfont_size=14)
         fig_evol_evasao.update_layout(template="plotly_dark", xaxis=dict(type='category'), margin={"r":0,"t":10,"l":0,"b":0}, height=450)
         
         st.plotly_chart(fig_evol_evasao, use_container_width=True)
 
+        saidas_por_ano = (
+            fluxo_saidas.groupby('ANO_CMPT')['INTERNACOES_FORA_RMC'].sum()
+            .rename('Moradores atendidos fora da RMC').reset_index()
+            if not fluxo_saidas.empty else pd.DataFrame(columns=['ANO_CMPT', 'Moradores atendidos fora da RMC'])
+        )
+        fig_saidas = px.bar(
+            saidas_por_ano,
+            x='ANO_CMPT',
+            y='Moradores atendidos fora da RMC',
+            labels={'ANO_CMPT': 'Ano'},
+            title='Internações de moradores da RMC atendidas fora — sem detalhar o destino',
+        )
+        st.plotly_chart(fig_saidas, use_container_width=True)
+
 
     # =========================================================
     # ABA 2: MAPA DE CALOR E INCIDÊNCIA
     # =========================================================
     with aba_incidencia:
-        st.title("🔥 Focos de Doenças Respiratórias em Campinas")
+        st.title("🔥 Internações respiratórias por bairro de residência em Campinas")
         
         df_coords = carregar_coords_bairros()
 
         if not df_coords.empty:
-            df_campinas = df[df['MUNIC_RES'].astype(str).str.startswith('350950')].copy()
+            df_campinas = df_rmc_atendimento[
+                df_rmc_atendimento['MUNIC_RES'].astype(str).str.startswith('350950')
+            ].copy()
             coluna_cid = 'DIAG_PRINC' if 'DIAG_PRINC' in df_campinas.columns else 'CID_PRI' if 'CID_PRI' in df_campinas.columns else None
             
             if coluna_cid: df_campinas['CATEGORIA_DOENCA'] = df_campinas[coluna_cid].apply(classificar_cid10)

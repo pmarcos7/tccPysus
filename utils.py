@@ -2,9 +2,23 @@ import unicodedata
 import pandas as pd
 import numpy as np
 
+MUNICIPIOS_RMC_NOMES = (
+    'Americana', 'Artur Nogueira', 'Campinas', 'Cosmópolis',
+    'Engenheiro Coelho', 'Holambra', 'Hortolândia', 'Indaiatuba',
+    'Itatiba', 'Jaguariúna', 'Monte Mor', 'Morungaba', 'Nova Odessa',
+    'Paulínia', 'Pedreira', "Santa Bárbara D'Oeste",
+    'Santo Antônio de Posse', 'Sumaré', 'Valinhos', 'Vinhedo',
+)
+
 def normalizar_nome(s):
+    if not isinstance(s, str):
+        return ''
     s = unicodedata.normalize('NFKD', s).encode('ascii', 'ignore').decode('ascii')
     return s.upper().strip()
+
+MUNICIPIOS_RMC_NORMALIZADOS = frozenset(
+    normalizar_nome(nome) for nome in MUNICIPIOS_RMC_NOMES
+)
 
 def classificar_faixa_etaria(idade):
     try:

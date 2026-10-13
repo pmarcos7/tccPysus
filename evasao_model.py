@@ -4,9 +4,18 @@ from sklearn.preprocessing import OrdinalEncoder
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, roc_auc_score
+from utils import MUNICIPIOS_RMC_NORMALIZADOS, normalizar_nome
 
 def treinar_modelo_evasao(caminho_gold_ml):
     df_ml = pd.read_parquet(caminho_gold_ml)
+
+    # A classificação representa deslocamentos entre municípios da RMC.
+    # Atendimentos fora da região são contabilizados separadamente no dashboard.
+    df_ml = df_ml[
+        df_ml['NOME_MUNIC_ATENDIMENTO']
+        .map(normalizar_nome)
+        .isin(MUNICIPIOS_RMC_NORMALIZADOS)
+    ].copy()
     
     features_cat = ['FAIXA_ETARIA', 'ESTACAO', 'SUBCATEGORIA_CID', 'TIPO_ATENDIMENTO']
     features_num = ['IDADE']
