@@ -1,6 +1,7 @@
 import pandas as pd
 import time
 from geopy.geocoders import Nominatim
+from utils import MUNICIPIOS_RMC_NORMALIZADOS, normalizar_nome
 
 # Inicializar o geocodificador (o user_agent é obrigatório pela API gratuita)
 geolocator = Nominatim(user_agent="tcc_sus_campinas")
@@ -20,6 +21,11 @@ def obter_coordenadas_bairro(nome_bairro):
 # Exemplo de como gerar o seu dicionário de Bairros:
 # 1. Carregue os seus dados do TCC
 df = pd.read_parquet('./TCC_Datasus/data/processed/gold_resp_eda.parquet')
+df = df[
+    df['NOME_MUNIC_ATENDIMENTO']
+    .map(normalizar_nome)
+    .isin(MUNICIPIOS_RMC_NORMALIZADOS)
+].copy()
 
 # 2. Isole apenas os bairros de Campinas válidos
 bairros_campinas = df[df['NOME_BAIRRO'] != 'Fora de Campinas']['NOME_BAIRRO'].dropna().unique()

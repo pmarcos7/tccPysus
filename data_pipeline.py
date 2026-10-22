@@ -7,12 +7,17 @@ import pandas as pd
 import numpy as np
 import pyarrow.parquet as pq
 from tqdm.auto import tqdm
-from utils import normalizar_nome, classificar_faixa_etaria, classificar_estacao, subcategoria_cid_respiratorio, limpar_cep
+from utils import (
+    MUNICIPIOS_RMC_NOMES,
+    normalizar_nome,
+    classificar_faixa_etaria,
+    classificar_estacao,
+    subcategoria_cid_respiratorio,
+    limpar_cep,
+)
 
 COLUNAS_VITAIS = ['N_AIH', 'ANO_CMPT', 'MES_CMPT', 'IDADE', 'SEXO', 'MUNIC_RES', 'MUNIC_MOV', 'CEP', 'CNES', 'CAR_INT', 'DIAG_PRINC', 'DIAS_PERM', 'MORTE']
 ANOS_ANALISE = {2022, 2023, 2024, 2025}
-MUNICIPIOS_RMC_NOMES = ['Americana', 'Artur Nogueira', 'Campinas', 'Cosmópolis', 'Engenheiro Coelho', 'Holambra', 'Hortolândia', 'Indaiatuba', 'Itatiba', 'Jaguariúna', 'Monte Mor', 'Morungaba', 'Nova Odessa', 'Paulínia', 'Pedreira', "Santa Bárbara D'Oeste", 'Santo Antônio de Posse', 'Sumaré', 'Valinhos', 'Vinhedo']
-
 def obter_codigos_rmc():
     url_ibge = 'https://servicodados.ibge.gov.br/api/v1/localidades/municipios'
     try:
@@ -25,6 +30,12 @@ def obter_codigos_rmc():
         
     nomes_rmc_norm = {normalizar_nome(n) for n in MUNICIPIOS_RMC_NOMES}
     codigos_rmc = {cod for cod, nome in dic_nomes.items() if cod.startswith('35') and normalizar_nome(nome) in nomes_rmc_norm}
+    if len(codigos_rmc) != len(MUNICIPIOS_RMC_NOMES):
+        raise RuntimeError(
+            "Não foi possível confirmar os códigos de todos os 20 municípios da RMC "
+            "na API do IBGE. Verifique a conexão e tente novamente; o pipeline foi "
+            "interrompido para não gerar uma base com recorte geográfico incompleto."
+        )
     return codigos_rmc, dic_nomes
 
 def consultar_viacep_com_cache(ceps_unicos, arq_cep_cache):
@@ -69,7 +80,13 @@ def executar_pipeline(caminho_raw, caminho_processed):
 
         df_lote['ANO_CMPT'] = pd.to_numeric(df_lote['ANO_CMPT'], errors='coerce')
         df_lote = df_lote[df_lote['ANO_CMPT'].isin(ANOS_ANALISE)]
-        df_lote = df_lote[df_lote['MUNIC_RES'].astype(str).str[:6].isin(codigos_rmc)]
+        codigos_residencia = (
+            df_lote['MUNIC_RES']
+            .astype('string')
+            .str.replace(r'\.0$', '', regex=True)
+            .str[:6]
+        )
+        df_lote = df_lote[codigos_residencia.isin(codigos_rmc)]
         df_lote['DIAG_PRINC'] = df_lote['DIAG_PRINC'].astype(str).str.strip()
         df_lote = df_lote[df_lote['DIAG_PRINC'].str[0].str.upper() == 'J']
         df_lote = df_lote.drop_duplicates(subset=['N_AIH'])
@@ -93,17 +110,54 @@ def executar_pipeline(caminho_raw, caminho_processed):
     df_gold['TIPO_ATENDIMENTO'] = df_gold['CAR_INT'].astype(str).str.zfill(2).map({'01': 'Eletiva', '02': 'Urgencia'}).fillna('Outros')
 
     if 'MUNIC_MOV' in df_gold.columns:
-        df_gold['MUNIC_ATENDIMENTO'] = df_gold['MUNIC_MOV'].astype(str).str[:6]
+        codigo_atendimento = (
+            df_gold['MUNIC_MOV']
+            .astype('string')
+            .str.replace(r'\.0$', '', regex=True)
+            .str[:6]
+        )
     else:
-        df_gold['MUNIC_ATENDIMENTO'] = df_gold['N_AIH'].astype(str).str[:6]
+        # Não inferir o município de atendimento pelo número da AIH: o campo
+        # MUNIC_MOV ausente deve permanecer desconhecido.
+        codigo_atendimento = pd.Series(pd.NA, index=df_gold.index, dtype='string')
 
-    df_gold['NOME_MUNIC_RES'] = df_gold['MUNIC_RES'].astype(str).str[:6].map(dic_nomes).fillna('Nao Informado')
-    df_gold['NOME_MUNIC_ATENDIMENTO'] = df_gold['MUNIC_ATENDIMENTO'].map(dic_nomes).fillna('Nao Informado')
-    df_gold['ATENDIDO_FORA'] = (df_gold['MUNIC_RES'].astype(str).str[:6] != df_gold['MUNIC_ATENDIMENTO']).astype(int)
+    codigo_residencia = (
+        df_gold['MUNIC_RES']
+        .astype('string')
+        .str.replace(r'\.0$', '', regex=True)
+        .str[:6]
+    )
+    df_gold['MUNIC_ATENDIMENTO'] = codigo_atendimento
+    df_gold['NOME_MUNIC_RES'] = codigo_residencia.map(dic_nomes).fillna('Nao Informado')
+
+    nomes_atendimento = codigo_atendimento.map(dic_nomes)
+    atendimento_conhecido = nomes_atendimento.notna()
+    atendimento_na_rmc = codigo_atendimento.isin(codigos_rmc)
+    df_gold['ATENDIDO_FORA_RMC'] = pd.Series(pd.NA, index=df_gold.index, dtype='Int64')
+    df_gold.loc[atendimento_conhecido, 'ATENDIDO_FORA_RMC'] = (
+        ~atendimento_na_rmc.loc[atendimento_conhecido]
+    ).astype('int64')
+
+    residencia_e_atendimento_conhecidos = (
+        codigo_residencia.isin(dic_nomes) & atendimento_conhecido
+    )
+    df_gold['ATENDIDO_FORA'] = pd.Series(pd.NA, index=df_gold.index, dtype='Int64')
+    df_gold.loc[residencia_e_atendimento_conhecidos, 'ATENDIDO_FORA'] = (
+        codigo_residencia.loc[residencia_e_atendimento_conhecidos]
+        != codigo_atendimento.loc[residencia_e_atendimento_conhecidos]
+    ).astype('int64')
+
+    df_gold['NOME_MUNIC_ATENDIMENTO'] = nomes_atendimento.fillna('Nao Informado')
+    atendido_fora_rmc = df_gold['ATENDIDO_FORA_RMC'].eq(1)
+    df_gold.loc[atendido_fora_rmc, 'NOME_MUNIC_ATENDIMENTO'] = 'Fora da RMC'
+    # O destino externo é mantido somente como indicador agregado, sem conservar
+    # o código ou o nome da cidade fora da RMC nos arquivos processados.
+    df_gold.loc[atendido_fora_rmc, 'MUNIC_ATENDIMENTO'] = pd.NA
 
     # ViaCEP
     df_gold['CEP_LIMPO'] = limpar_cep(df_gold['CEP'])
-    mask_campinas = df_gold['MUNIC_RES'].astype(str).str.startswith('350950')
+    residencia_campinas = df_gold['MUNIC_RES'].astype(str).str.startswith('350950')
+    mask_campinas = residencia_campinas & df_gold['ATENDIDO_FORA_RMC'].eq(0)
     ceps_campinas = df_gold.loc[mask_campinas, 'CEP_LIMPO'].dropna().unique().tolist()
     
     arq_cep_cache = os.path.join(caminho_processed, 'cep_bairro_cache.parquet')
@@ -111,13 +165,37 @@ def executar_pipeline(caminho_raw, caminho_processed):
     mapa_cep_bairro = df_cache.set_index('CEP')['NOME_BAIRRO']
 
     df_gold['NOME_BAIRRO'] = 'Fora de Campinas'
+    df_gold.loc[
+        residencia_campinas & df_gold['ATENDIDO_FORA_RMC'].eq(1), 'NOME_BAIRRO'
+    ] = 'Fora do recorte de atendimento na RMC'
     df_gold.loc[mask_campinas, 'NOME_BAIRRO'] = df_gold.loc[mask_campinas, 'CEP_LIMPO'].map(mapa_cep_bairro).fillna('Bairro Nao Informado/Invalido')
-    df_gold = df_gold.drop(columns=['CEP', 'CEP_LIMPO', 'CNES'], errors='ignore')
+    df_gold = df_gold.drop(columns=['CEP', 'CEP_LIMPO'], errors='ignore')
 
-    # Separação EDA e ML
-    df_eda = df_gold.copy()
     df_gold['MORTE'] = pd.to_numeric(df_gold['MORTE'], errors='coerce').fillna(0)
-    df_ml = df_gold[df_gold['MORTE'] != 1].drop(columns=['MORTE']).copy()
+    # Registros de atendimento fora da região são reduzidos a contagens por ano
+    # e município de residência. Não carregamos diagnósticos ou destinos externos
+    # para as análises de permanência e fluxo interno.
+    fluxo_saidas_rmc = (
+        df_gold.loc[df_gold['ATENDIDO_FORA_RMC'].eq(1)]
+        .groupby(['ANO_CMPT', 'MUNIC_RES', 'NOME_MUNIC_RES'], dropna=False)
+        .agg(
+            INTERNACOES_FORA_RMC=('ATENDIDO_FORA_RMC', 'size'),
+        )
+        .reset_index()
+    )
+    df_eda = df_gold[df_gold['ATENDIDO_FORA_RMC'].eq(0)].drop(
+        columns=['ATENDIDO_FORA_RMC'], errors='ignore'
+    ).copy()
+    df_ml = df_eda[df_eda['MORTE'] != 1].drop(columns=['MORTE'], errors='ignore').copy()
 
     df_eda.to_parquet(os.path.join(caminho_processed, 'gold_resp_eda.parquet'), index=False)
     df_ml.to_parquet(os.path.join(caminho_processed, 'gold_resp_ml.parquet'), index=False)
+    fluxo_saidas_rmc.to_parquet(
+        os.path.join(caminho_processed, 'gold_resp_fluxo.parquet'), index=False
+    )
+    total_fora_rmc = int(fluxo_saidas_rmc['INTERNACOES_FORA_RMC'].sum())
+    total_atendidos_rmc = len(df_eda)
+    print(
+        f"Recorte RMC: {total_atendidos_rmc} internações atendidas na região; "
+        f"{total_fora_rmc} moradores atendidos fora (destinos agregados)."
+    )

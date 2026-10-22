@@ -5,10 +5,18 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.seasonal import seasonal_decompose
 from sklearn.preprocessing import StandardScaler, OrdinalEncoder
 from sklearn.decomposition import PCA
+from utils import MUNICIPIOS_RMC_NORMALIZADOS, normalizar_nome
 
 def gerar_graficos_eda(caminho_gold_eda):
     print("A carregar dados para os gráficos EDA...")
     df_eda = pd.read_parquet(caminho_gold_eda)
+    df_eda = df_eda[
+        df_eda['NOME_MUNIC_ATENDIMENTO']
+        .map(normalizar_nome)
+        .isin(MUNICIPIOS_RMC_NORMALIZADOS)
+    ].copy()
+    if df_eda.empty:
+        raise ValueError("Não há internações atendidas dentro da RMC para gerar os gráficos.")
     os.makedirs('plots', exist_ok=True)
 
     # ---------------------------------------------------------
