@@ -82,6 +82,7 @@ hospitais = carregar_csv("comparacao_hospitais_2025.csv")
 deslocamentos = carregar_deslocamentos(str(ARQUIVO_DESLOCAMENTOS))
 fluxo_saidas = carregar_fluxo_saidas(str(ARQUIVO_FLUXO_SAIDAS))
 metricas_por_grupo = carregar_csv("metricas_por_grupo_2025.csv")
+metricas_por_segmento = carregar_csv("metricas_por_segmento_2025.csv")
 
 if metricas.empty or hospitais.empty:
     st.error(
@@ -166,6 +167,55 @@ with aba_modelos:
         labels={"modelo": "Modelo"},
     )
     st.plotly_chart(fig_metricas, use_container_width=True)
+
+    if not metricas_por_segmento.empty:
+        st.divider()
+        st.subheader("Análise final: desempenho por segmento (urgência × eletiva)")
+        st.markdown(
+            "A métrica geral esconde que as internações **eletivas** (curtas, ~1 dia) são "
+            "fáceis de prever e inflam o desempenho. O que importa clinicamente são as "
+            "**urgências**. É aqui que as variáveis de gravidade (passagem por UTI) mostram valor."
+        )
+        segmentos = metricas_por_segmento.copy()
+        for coluna in ["internacoes", "MAE_dias", "RMSE_dias", "R2"]:
+            segmentos[coluna] = pd.to_numeric(segmentos[coluna], errors="coerce")
+
+        urgencia = segmentos[segmentos["segmento"] == "Urgencia"]
+
+        def _metrica_urgencia(nome_modelo, coluna):
+            linha = urgencia[urgencia["modelo"] == nome_modelo]
+            return float(linha[coluna].iloc[0]) if not linha.empty else None
+
+        mae_hgbr = _metrica_urgencia("HistGradientBoostingRegressor", "MAE_dias")
+        mae_grav = _metrica_urgencia("HGBR + gravidade (explicativo)", "MAE_dias")
+        r2_grav = _metrica_urgencia("HGBR + gravidade (explicativo)", "R2")
+        if mae_hgbr is not None and mae_grav is not None:
+            col1, col2, col3 = st.columns(3)
+            col1.metric("MAE urgência — HGBR", f"{mae_hgbr:.2f} dias")
+            col2.metric(
+                "MAE urgência — HGBR + gravidade",
+                f"{mae_grav:.2f} dias",
+                delta=f"{mae_grav - mae_hgbr:.2f} dias",
+                delta_color="inverse",
+            )
+            if r2_grav is not None:
+                col3.metric("R² urgência — com gravidade", f"{r2_grav:.2f}")
+
+        tabela_segmento = segmentos.rename(
+            columns={
+                "segmento": "Segmento",
+                "modelo": "Modelo",
+                "internacoes": "Internações",
+                "MAE_dias": "MAE (dias)",
+                "RMSE_dias": "RMSE (dias)",
+                "R2": "R²",
+            }
+        ).round({"MAE (dias)": 3, "RMSE (dias)": 3, "R²": 3})
+        st.dataframe(tabela_segmento, hide_index=True, use_container_width=True)
+        st.caption(
+            "USOU_UTI é conhecido durante a internação (uso explicativo, não previsão na "
+            "admissão). Leitura honesta: compare cada modelo com o 'Baseline: média do subgrupo'."
+        )
 
 with aba_hospitais:
     st.subheader("Comparação por estabelecimento")
