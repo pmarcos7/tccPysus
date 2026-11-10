@@ -16,8 +16,29 @@ from utils import (
     limpar_cep,
 )
 
-COLUNAS_VITAIS = ['N_AIH', 'ANO_CMPT', 'MES_CMPT', 'IDADE', 'SEXO', 'MUNIC_RES', 'MUNIC_MOV', 'CEP', 'CNES', 'CAR_INT', 'DIAG_PRINC', 'DIAS_PERM', 'MORTE']
+# Diagnósticos secundários usados para contar comorbidades.
+COLUNAS_DIAG_SECUNDARIO = [
+    'DIAG_SECUN', 'DIAGSEC1', 'DIAGSEC2', 'DIAGSEC3', 'DIAGSEC4',
+    'DIAGSEC5', 'DIAGSEC6', 'DIAGSEC7', 'DIAGSEC8', 'DIAGSEC9',
+]
+# Variável de gravidade: passagem pela UTI durante a internação.
+COLUNAS_GRAVIDADE = ['UTI_MES_TO']
+COLUNAS_VITAIS = (
+    ['N_AIH', 'ANO_CMPT', 'MES_CMPT', 'IDADE', 'SEXO', 'MUNIC_RES', 'MUNIC_MOV',
+     'CEP', 'CNES', 'CAR_INT', 'DIAG_PRINC', 'DIAS_PERM', 'MORTE']
+    + COLUNAS_GRAVIDADE + COLUNAS_DIAG_SECUNDARIO
+)
 ANOS_ANALISE = {2022, 2023, 2024, 2025}
+
+
+def contar_comorbidades(df, colunas_secundarias):
+    """Conta diagnósticos secundários válidos (padrão CID: letra + dígito)."""
+    total = pd.Series(0, index=df.index, dtype='int64')
+    for coluna in colunas_secundarias:
+        s = df[coluna].astype(str).str.strip().str.upper()
+        valido = ~s.isin(['', 'NAN', 'NONE', '0000', '0']) & s.str.match(r'^[A-Z]\d')
+        total = total + valido.astype('int64')
+    return total
 def obter_codigos_rmc():
     url_ibge = 'https://servicodados.ibge.gov.br/api/v1/localidades/municipios'
     try:
@@ -108,6 +129,29 @@ def executar_pipeline(caminho_raw, caminho_processed):
     df_gold['ESTACAO'] = df_gold['MES_CMPT'].apply(classificar_estacao)
     df_gold['SUBCATEGORIA_CID'] = df_gold['DIAG_PRINC'].astype(str).apply(subcategoria_cid_respiratorio)
     df_gold['TIPO_ATENDIMENTO'] = df_gold['CAR_INT'].astype(str).str.zfill(2).map({'01': 'Eletiva', '02': 'Urgencia'}).fillna('Outros')
+
+    # Gravidade clínica: passagem pela UTI (indicador) e nº de comorbidades.
+    # USOU_UTI é a feature que mais explica permanência; é conhecida durante a
+    # internação (uso explicativo, não previsão no momento da admissão).
+    # Mantemos apenas o indicador, não os dias de UTI, para evitar vazamento
+    # (dias de UTI são parte da própria permanência).
+    if 'UTI_MES_TO' in df_gold.columns:
+        uti_dias = pd.to_numeric(df_gold['UTI_MES_TO'], errors='coerce').fillna(0)
+        df_gold['USOU_UTI'] = (uti_dias > 0).astype('int64')
+    else:
+        df_gold['USOU_UTI'] = 0
+
+    secundarias_presentes = [c for c in COLUNAS_DIAG_SECUNDARIO if c in df_gold.columns]
+    if secundarias_presentes:
+        df_gold['N_COMORBID'] = contar_comorbidades(df_gold, secundarias_presentes)
+    else:
+        df_gold['N_COMORBID'] = 0
+
+    # Remove colunas brutas de gravidade/comorbidade já resumidas (evita vazamento
+    # e mantém a base enxuta).
+    df_gold = df_gold.drop(
+        columns=COLUNAS_GRAVIDADE + COLUNAS_DIAG_SECUNDARIO, errors='ignore'
+    )
 
     if 'MUNIC_MOV' in df_gold.columns:
         codigo_atendimento = (

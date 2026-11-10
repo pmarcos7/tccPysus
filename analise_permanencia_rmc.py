@@ -109,6 +109,18 @@ def main():
     if faltantes:
         raise ValueError(f"Faltam colunas na base: {faltantes}")
 
+    # Features de gravidade clínica, se o pipeline enriquecido já as gerou.
+    # Sem elas o script roda igual (só não treina o modelo com gravidade).
+    colunas_gravidade = ["USOU_UTI", "N_COMORBID"]
+    usar_gravidade = all(coluna in df.columns for coluna in colunas_gravidade)
+    if usar_gravidade:
+        colunas_necessarias = colunas_necessarias + colunas_gravidade
+    else:
+        print(
+            "Aviso: USOU_UTI/N_COMORBID ausentes em gold_resp_ml. Rode o pipeline "
+            "desta branch (main.py --step pipeline) para treinar o modelo com gravidade."
+        )
+
     df = df[colunas_necessarias].copy()
 
     # A base também contém moradores da RMC atendidos fora da região. Esses
@@ -237,6 +249,17 @@ def main():
     modelo_hgbr_poisson.fit(treino[features_hgbr], y_treino)
     previsoes["HGBR (Poisson)"] = modelo_hgbr_poisson.predict(teste[features_hgbr])
 
+    # Modelo explicativo com gravidade clínica (USOU_UTI, N_COMORBID). É aqui que
+    # se espera o ML finalmente superar o baseline de subgrupo. USOU_UTI é
+    # conhecido durante a internação -> uso explicativo, não previsão na admissão.
+    if usar_gravidade:
+        features_grav = features_hgbr + colunas_gravidade
+        modelo_hgbr_grav = criar_modelo_hgbr()
+        modelo_hgbr_grav.fit(treino[features_grav], y_treino)
+        previsoes["HGBR + gravidade (explicativo)"] = modelo_hgbr_grav.predict(
+            teste[features_grav]
+        )
+
     PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
 
     tabela_metricas = pd.DataFrame(
@@ -295,6 +318,13 @@ def main():
     resultado["ERRO_ABSOLUTO_HGBR_POISSON"] = (
         resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_HGBR_POISSON"]
     ).abs()
+    if usar_gravidade:
+        resultado["PREVISTO_HGBR_GRAVIDADE"] = previsoes[
+            "HGBR + gravidade (explicativo)"
+        ]
+        resultado["ERRO_ABSOLUTO_HGBR_GRAVIDADE"] = (
+            resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_HGBR_GRAVIDADE"]
+        ).abs()
 
     resultado["DIFERENCA_OBSERVADO_ESPERADO"] = (
         resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_SEM_MUNICIPIO"]
@@ -418,6 +448,8 @@ def main():
         "HistGradientBoostingRegressor": "PREVISTO_HGBR",
         "HGBR (Poisson)": "PREVISTO_HGBR_POISSON",
     }
+    if usar_gravidade:
+        colunas_previsao["HGBR + gravidade (explicativo)"] = "PREVISTO_HGBR_GRAVIDADE"
     segmentos = [("Geral", resultado)]
     for tipo in ["Urgencia", "Eletiva"]:
         segmentos.append((tipo, resultado[resultado["TIPO_ATENDIMENTO"] == tipo]))

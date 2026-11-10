@@ -140,5 +140,25 @@ razão observado/esperado com funnel plots (limites de controle por volume de ca
 
 ---
 
+---
+
+## 7. Confirmação na branch `features-gravidade`
+
+A feature foi implementada no pipeline (`USOU_UTI`, `N_COMORBID` em `gold_resp_ml`)
+e o modelo `HGBR + gravidade (explicativo)` foi avaliado no mesmo framework honesto:
+
+| Segmento | Baseline subgrupo | HGBR atual | HGBR + gravidade |
+|---|---|---|---|
+| Geral | 4,236 / R² 0,080 | 4,232 / 0,081 | **3,853 / 0,224** |
+| Urgência | 4,348 / 0,061 | 4,341 / 0,062 | **3,952 / 0,209** |
+| Eletiva | 2,438 / 0,154 | 2,464 / 0,181 | **2,248 / 0,277** |
+
+Com gravidade, o ML finalmente **supera o baseline de subgrupo** em todos os
+segmentos (em urgências: 3,95 vs 4,35; R² de 0,06 → 0,21). Confirma que o limitante
+era informação clínica, não o algoritmo. Reforço da ressalva: `USOU_UTI` é
+conhecido durante a internação → modelo **explicativo**, não de previsão na admissão.
+
+---
+
 *Gerado a partir de `resultados_permanencia/` (métricas, previsões e segmentos de
 2025) e de experimento com os brutos do SIH casados por `N_AIH`.*
