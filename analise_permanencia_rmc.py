@@ -1,4 +1,5 @@
 from pathlib import Path
+import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyRegressor
@@ -175,6 +176,21 @@ def main():
     modelo_com_municipio.fit(treino, y_treino)
     previsoes["Modelo com município"] = modelo_com_municipio.predict(teste)
 
+    # Baseline por subgrupo: prevê a média de dias do próprio perfil clínico
+    # (doença × faixa etária × tipo de atendimento), aprendida SÓ no treino.
+    # É a referência honesta — um "chute pela média do grupo semelhante", sem ML.
+    # Se o modelo não ganhar disto, as features atuais não justificam o ML.
+    chaves_subgrupo = ["SUBCATEGORIA_CID", "FAIXA_ETARIA", "TIPO_ATENDIMENTO"]
+    medias_subgrupo = treino.groupby(chaves_subgrupo)["DIAS_PERM"].mean()
+    media_global_treino = y_treino.mean()
+    chave_teste = teste.set_index(chaves_subgrupo).index
+    previsao_subgrupo = chave_teste.map(medias_subgrupo).to_numpy(dtype="float64")
+    # Subgrupo sem histórico no treino cai na média global.
+    previsao_subgrupo = np.where(
+        np.isnan(previsao_subgrupo), media_global_treino, previsao_subgrupo
+    )
+    previsoes["Baseline: média do subgrupo"] = previsao_subgrupo
+
     # Mantém a especificação do HistGradientBoosting já usada no trabalho.
     features_cat_hgbr = [
         "FAIXA_ETARIA",
@@ -183,29 +199,43 @@ def main():
         "TIPO_ATENDIMENTO",
     ]
     features_hgbr = ["IDADE"] + features_cat_hgbr
-    preparar_hgbr = ColumnTransformer(
-        transformers=[
-            (
-                "cat",
-                OrdinalEncoder(
-                    handle_unknown="use_encoded_value",
-                    unknown_value=-1,
+
+    def criar_modelo_hgbr(loss="squared_error"):
+        """Monta o mesmo HGBR variando apenas a função de perda."""
+        preparar = ColumnTransformer(
+            transformers=[
+                (
+                    "cat",
+                    OrdinalEncoder(
+                        handle_unknown="use_encoded_value",
+                        unknown_value=-1,
+                    ),
+                    features_cat_hgbr,
+                )
+            ],
+            remainder="passthrough",
+        )
+        return Pipeline(
+            steps=[
+                ("preprocessor", preparar),
+                (
+                    "regressor",
+                    HistGradientBoostingRegressor(loss=loss, random_state=42),
                 ),
-                features_cat_hgbr,
-            )
-        ],
-        remainder="passthrough",
-    )
-    modelo_hgbr = Pipeline(
-        steps=[
-            ("preprocessor", preparar_hgbr),
-            ("regressor", HistGradientBoostingRegressor(random_state=42)),
-        ]
-    )
+            ]
+        )
+
+    modelo_hgbr = criar_modelo_hgbr()
     modelo_hgbr.fit(treino[features_hgbr], y_treino)
     previsoes["HistGradientBoostingRegressor"] = modelo_hgbr.predict(
         teste[features_hgbr]
     )
+
+    # Perda de Poisson: respeita a natureza de contagem/assimetria de DIAS_PERM
+    # (cauda longa de internações longas) em vez do erro quadrático padrão.
+    modelo_hgbr_poisson = criar_modelo_hgbr(loss="poisson")
+    modelo_hgbr_poisson.fit(treino[features_hgbr], y_treino)
+    previsoes["HGBR (Poisson)"] = modelo_hgbr_poisson.predict(teste[features_hgbr])
 
     PASTA_RESULTADOS.mkdir(parents=True, exist_ok=True)
 
@@ -240,12 +270,17 @@ def main():
 
     resultado = resultado.rename(columns={"DIAS_PERM": "DIAS_OBSERVADOS"})
     resultado["PREVISTO_BASELINE"] = previsoes["Baseline: média"]
+    resultado["PREVISTO_SUBGRUPO"] = previsoes["Baseline: média do subgrupo"]
     resultado["PREVISTO_SEM_MUNICIPIO"] = previsoes["Modelo sem município"]
     resultado["PREVISTO_COM_MUNICIPIO"] = previsoes["Modelo com município"]
     resultado["PREVISTO_HGBR"] = previsoes["HistGradientBoostingRegressor"]
+    resultado["PREVISTO_HGBR_POISSON"] = previsoes["HGBR (Poisson)"]
 
     resultado["ERRO_ABSOLUTO_BASELINE"] = (
         resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_BASELINE"]
+    ).abs()
+    resultado["ERRO_ABSOLUTO_SUBGRUPO"] = (
+        resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_SUBGRUPO"]
     ).abs()
     resultado["ERRO_ABSOLUTO_SEM_MUNICIPIO"] = (
         resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_SEM_MUNICIPIO"]
@@ -256,6 +291,9 @@ def main():
     ).abs()
     resultado["ERRO_ABSOLUTO_HGBR"] = (
         resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_HGBR"]
+    ).abs()
+    resultado["ERRO_ABSOLUTO_HGBR_POISSON"] = (
+        resultado["DIAS_OBSERVADOS"] - resultado["PREVISTO_HGBR_POISSON"]
     ).abs()
 
     resultado["DIFERENCA_OBSERVADO_ESPERADO"] = (
@@ -279,9 +317,11 @@ def main():
             mediana_observada=("DIAS_OBSERVADOS", "median"),
             p90_observado=("DIAS_OBSERVADOS", lambda valores: valores.quantile(0.90)),
             mae_baseline=("ERRO_ABSOLUTO_BASELINE", "mean"),
+            mae_subgrupo=("ERRO_ABSOLUTO_SUBGRUPO", "mean"),
             mae_sem_municipio=("ERRO_ABSOLUTO_SEM_MUNICIPIO", "mean"),
             mae_com_municipio=("ERRO_ABSOLUTO_COM_MUNICIPIO", "mean"),
             mae_hgbr=("ERRO_ABSOLUTO_HGBR", "mean"),
+            mae_hgbr_poisson=("ERRO_ABSOLUTO_HGBR_POISSON", "mean"),
         )
         .reset_index()
     )
@@ -296,6 +336,12 @@ def main():
     )
     metricas_por_grupo["ganho_mae_hgbr"] = (
         metricas_por_grupo["mae_baseline"] - metricas_por_grupo["mae_hgbr"]
+    )
+    # Ganho do melhor modelo de ML SOBRE o baseline de subgrupo: mostra se o ML
+    # agrega algo além de "chutar a média do grupo semelhante". Valor <= 0
+    # significa que a tabela de médias por subgrupo já faz igual ou melhor.
+    metricas_por_grupo["ganho_hgbr_sobre_subgrupo"] = (
+        metricas_por_grupo["mae_subgrupo"] - metricas_por_grupo["mae_hgbr"]
     )
     metricas_por_grupo.to_csv(
         PASTA_RESULTADOS / "metricas_por_grupo_2025.csv",
@@ -361,11 +407,62 @@ def main():
         encoding="utf-8-sig",
     )
 
-    print("\nDesempenho dos modelos no teste de 2025:")
+    # Avaliação estratificada: a métrica global esconde que o modelo só acerta
+    # bem as eletivas curtas (1 dia). Separar urgência × eletiva mostra o
+    # desempenho no problema que de fato importa (internações urgentes longas).
+    colunas_previsao = {
+        "Baseline: média": "PREVISTO_BASELINE",
+        "Baseline: média do subgrupo": "PREVISTO_SUBGRUPO",
+        "Modelo sem município": "PREVISTO_SEM_MUNICIPIO",
+        "Modelo com município": "PREVISTO_COM_MUNICIPIO",
+        "HistGradientBoostingRegressor": "PREVISTO_HGBR",
+        "HGBR (Poisson)": "PREVISTO_HGBR_POISSON",
+    }
+    segmentos = [("Geral", resultado)]
+    for tipo in ["Urgencia", "Eletiva"]:
+        segmentos.append((tipo, resultado[resultado["TIPO_ATENDIMENTO"] == tipo]))
+
+    linhas_segmento = []
+    for nome_segmento, dados_segmento in segmentos:
+        if dados_segmento.empty:
+            continue
+        for nome_modelo, coluna in colunas_previsao.items():
+            linhas_segmento.append(
+                {
+                    "segmento": nome_segmento,
+                    "modelo": nome_modelo,
+                    "internacoes": len(dados_segmento),
+                    **calcular_metricas(
+                        nome_modelo,
+                        dados_segmento["DIAS_OBSERVADOS"],
+                        dados_segmento[coluna],
+                    ),
+                }
+            )
+    metricas_por_segmento = pd.DataFrame(
+        linhas_segmento,
+        columns=["segmento", "modelo", "internacoes", "MAE_dias", "RMSE_dias", "R2"],
+    )
+    metricas_por_segmento.to_csv(
+        PASTA_RESULTADOS / "metricas_por_segmento_2025.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+
+    print("\nDesempenho dos modelos no teste de 2025 (geral):")
     print(tabela_metricas.round(3).to_string(index=False))
+
+    print("\nDesempenho por segmento (urgência é o que importa clinicamente):")
+    print(metricas_por_segmento.round(3).to_string(index=False))
+
     print(f"\nResultados salvos em: {PASTA_RESULTADOS}")
     print(
-        "\nA diferença observado-esperado é uma associação nos dados. "
+        "\nLeitura honesta: compare cada modelo com o 'Baseline: média do subgrupo'. "
+        "Se o HGBR não ganhar dele (sobretudo em urgências), as features atuais não "
+        "justificam o uso de ML — o ganho vem de variáveis de gravidade ainda ausentes."
+    )
+    print(
+        "A diferença observado-esperado é uma associação nos dados. "
         "Ela não prova que uma cidade cause uma internação mais curta ou longa."
     )
 
