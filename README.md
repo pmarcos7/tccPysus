@@ -13,14 +13,19 @@ Projeto acadêmico que analisa internações por doenças do aparelho respirató
 
 ## O que o projeto produz
 
-1. **Pipeline de dados:** filtra internações respiratórias de residentes da RMC, remove duplicidades/outliers definidos pelo projeto e prepara variáveis para as análises.
-2. **Permanência hospitalar:** compara modelos de regressão para estimar dias de internação e gera previsões e métricas de desempenho para 2025.
-3. **Perfil e comparação por grupo:** resume a permanência por doença, faixa etária e tipo de atendimento; compara desempenho dos modelos nesses grupos.
+1. **Pipeline de dados:** filtra internações respiratórias de residentes da RMC, remove duplicidades/outliers definidos pelo projeto e prepara variáveis para as análises, incluindo variáveis de gravidade clínica (`USOU_UTI` = passou pela UTI; `N_COMORBID` = número de comorbidades).
+2. **Permanência hospitalar:** compara modelos de regressão para estimar dias de internação e gera previsões e métricas de desempenho para 2025. A comparação é feita contra um **baseline por subgrupo** (média de dias do perfil doença × faixa etária × tipo de atendimento), para não superestimar o valor do ML.
+3. **Perfil e comparação por grupo:** resume a permanência por doença, faixa etária e tipo de atendimento; compara desempenho dos modelos nesses grupos e por segmento (urgência × eletiva).
 4. **Comparação por hospital:** agrupa os resultados por CNES, doença e faixa etária, mostrando média observada e prevista. Só apresenta grupos com pelo menos 30 internações.
 5. **Deslocamentos e evasão:** descreve atendimentos entre municípios da RMC. As saídas da região são contabilizadas em conjunto, sem indicar município externo.
-6. **Dashboards:** `dashboard_permanencia.py` apresenta modelos, hospitais, perfil, previsões por grupo e deslocamentos; `dashboard.py` apresenta mapas e informações gerais do fluxo e das internações.
+6. **Simulador de permanência (2026):** `previsao.py` treina um modelo de produção com todo o histórico (2022–2025) usando **só variáveis conhecidas na admissão** (idade, faixa etária, estação, subcategoria de CID e tipo de atendimento) e estima os dias de internação de novos pacientes. Fica disponível também na aba "Simulador 2026" do dashboard de permanência.
+7. **Dashboards:** `dashboard_permanencia.py` apresenta modelos, hospitais, perfil, previsões por grupo, simulador 2026 e deslocamentos; `dashboard.py` apresenta mapas e informações gerais do fluxo e das internações.
 
 As diferenças entre médias observadas e previstas são associações nos dados e não demonstram que um hospital ou município cause internações mais longas ou curtas.
+
+### Observação sobre os modelos (achado do projeto)
+
+Com variáveis apenas demográficas/administrativas o ML empata com o baseline por subgrupo (R² ~0,08). Ao adicionar a gravidade clínica **`USOU_UTI`**, o erro em urgências cai ~9% e o R² triplica (0,06 → 0,21): só então o modelo supera o baseline. Como `USOU_UTI` só é conhecido **durante** a internação, esse é um modelo **explicativo**, não de previsão na admissão — por isso o `previsao.py` (que prevê na admissão) **não** usa UTI. Os detalhes estão em `NOTAS_MODELAGEM.md`.
 
 ## Estrutura do repositório
 
@@ -33,12 +38,14 @@ tccPysus/
 ├── data_pipeline.py         # Leitura, filtros e preparação dos dados
 ├── main.py                  # Execução das etapas do projeto
 ├── permanencia_model.py     # Modelo de permanência e comparação por hospital
-├── analise_permanencia_rmc.py # Métricas, perfil e previsões por grupo
+├── analise_permanencia_rmc.py # Métricas, perfil, segmentos e comparação dos modelos
+├── previsao.py              # Modelo de produção e simulador de permanência (2026)
 ├── evasao_model.py          # Modelo de deslocamento/evasão
 ├── eda_graficos.py          # Gráficos exploratórios
-├── dashboard_permanencia.py # Dashboard de permanência
+├── dashboard_permanencia.py # Dashboard de permanência (inclui aba Simulador 2026)
 ├── dashboard.py             # Dashboard de fluxo e mapas
 ├── utils.py                 # Funções e lista dos municípios da RMC
+├── NOTAS_MODELAGEM.md       # Descobertas de modelagem e investigação de features
 └── requirements.txt         # Dependências Python
 ```
 
@@ -86,6 +93,8 @@ Faça isso quando tiver os Parquets brutos em `TCC_Datasus/data/raw/` ou quando 
 
 O pipeline cria/atualiza as bases em `TCC_Datasus/data/processed/`. A execução pode demorar, especialmente se houver muitos arquivos ou CEPs ainda não presentes no cache.
 
+> **Importante:** esta versão do pipeline também gera as variáveis de gravidade (`USOU_UTI`, `N_COMORBID`) em `gold_resp_ml.parquet`. Se você estiver usando uma base processada antiga (sem essas colunas), o `analise_permanencia_rmc.py` ainda roda, mas avisa e **não** treina o modelo com gravidade. Para ter o modelo explicativo completo, rode o pipeline desta versão.
+
 ### 2. Gerar análises de permanência e comparação por hospital
 
 ```powershell
@@ -110,7 +119,17 @@ Para rodar pipeline, permanência, evasão e gráficos em sequência:
 
 `--step all` não substitui `analise_permanencia_rmc.py`; execute esse script à parte para atualizar as análises de perfil e comparação dos modelos mostradas no dashboard de permanência.
 
-### 4. Abrir os dashboards
+### 4. Treinar o modelo do simulador 2026 (opcional)
+
+Este passo treina o modelo de produção (previsão na admissão, **sem UTI**) e o salva em disco para o simulador do dashboard reutilizar:
+
+```powershell
+.\.venv\Scripts\python.exe .\previsao.py
+```
+
+O comando grava `modelo_permanencia_2026.joblib` em `TCC_Datasus/data/processed/` e imprime um exemplo de previsão. Não é obrigatório rodar à mão: se o modelo salvo não existir, a aba "Simulador 2026" do dashboard o treina sozinho na primeira vez.
+
+### 5. Abrir os dashboards
 
 Abra um dashboard por vez. O terminal ficará ocupado enquanto o aplicativo estiver rodando; use `Ctrl+C` no terminal para encerrá-lo.
 
@@ -135,10 +154,12 @@ Em `TCC_Datasus/data/processed/`:
 - `gold_resp_eda.parquet`: internações respiratórias para as análises exploratórias e o dashboard, atendidas dentro da RMC.
 - `gold_resp_ml.parquet`: base de modelagem de permanência, atendida dentro da RMC e sem óbitos.
 - `gold_resp_fluxo.parquet`: contagens agregadas de internações de residentes da RMC atendidos fora dela; não contém os destinos externos.
+- `modelo_permanencia_2026.joblib`: modelo de produção do simulador (gerado por `previsao.py`).
 
 Em `resultados_permanencia/`:
 
-- `metricas_modelos.csv`: métricas dos modelos no teste de 2025.
+- `metricas_modelos.csv`: métricas dos modelos no teste de 2025 (inclui o baseline por subgrupo e o HGBR com gravidade).
+- `metricas_por_segmento_2025.csv`: desempenho dos modelos separado por segmento (urgência × eletiva).
 - `previsoes_2025.csv`: previsões por internação do conjunto de teste.
 - `metricas_por_grupo_2025.csv`: perfil e desempenho por doença, faixa etária e tipo de atendimento.
 - `comparacao_por_municipio_2025.csv`: resumo por município de atendimento dentro da RMC.
