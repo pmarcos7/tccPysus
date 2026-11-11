@@ -1,9 +1,15 @@
 from pathlib import Path
 
+import joblib
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from utils import MUNICIPIOS_RMC_NORMALIZADOS, normalizar_nome
+from utils import (
+    MUNICIPIOS_RMC_NORMALIZADOS,
+    classificar_faixa_etaria,
+    normalizar_nome,
+)
+from previsao import ARQ_MODELO, prever_demanda_2026, treinar_modelo_producao
 
 
 st.set_page_config(
@@ -74,6 +80,13 @@ def carregar_fluxo_saidas(caminho: str) -> pd.DataFrame:
     return _ler_fluxo_saidas_em_cache(str(arquivo), arquivo.stat().st_mtime)
 
 
+@st.cache_resource
+def carregar_modelo_previsao():
+    if ARQ_MODELO.exists():
+        return joblib.load(ARQ_MODELO)
+    return treinar_modelo_producao()
+
+
 st.title("Internações por doenças respiratórias na RMC")
 st.caption("Modelos de previsão e comparação exploratória por estabelecimento, doença e faixa etária — ano de teste: 2025")
 
@@ -115,9 +128,18 @@ for coluna in [
     if coluna in hospitais.columns:
         hospitais[coluna] = pd.to_numeric(hospitais[coluna], errors="coerce")
 
-aba_modelos, aba_hospitais, aba_perfil, aba_previsao_grupos, aba_deslocamentos, aba_metodo = st.tabs(
+(
+    aba_modelos,
+    aba_simulador,
+    aba_hospitais,
+    aba_perfil,
+    aba_previsao_grupos,
+    aba_deslocamentos,
+    aba_metodo,
+) = st.tabs(
     [
         "📊 Modelos",
+        "🔮 Simulador 2026",
         "🏥 Hospitais",
         "📈 Perfil da permanência",
         "🎯 Previsão por grupo",
@@ -215,6 +237,60 @@ with aba_modelos:
         st.caption(
             "USOU_UTI é conhecido durante a internação (uso explicativo, não previsão na "
             "admissão). Leitura honesta: compare cada modelo com o 'Baseline: média do subgrupo'."
+        )
+
+with aba_simulador:
+    st.subheader("Simulador de permanência para novos pacientes (2026)")
+    st.markdown(
+        "Estimativa do tempo de internação a partir de variáveis conhecidas **na admissão**. "
+        "O modelo é treinado com todo o histórico de 2022–2025 e não usa a passagem pela UTI."
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        idade = st.number_input("Idade do paciente", min_value=0, max_value=120, value=60)
+        tipo_atendimento = st.selectbox(
+            "Tipo de atendimento", ["Urgencia", "Eletiva"], key="sim_tipo"
+        )
+    with col_b:
+        subcategoria = st.selectbox(
+            "Grupo de doença respiratória (CID)",
+            [
+                "Influenza/Pneumonia",
+                "IRA Aguda",
+                "IRA Superior",
+                "DPOC/Asma",
+                "Outras Respiratorias",
+            ],
+            key="sim_cid",
+        )
+        estacao = st.selectbox("Estação", ["Inverno", "Outras"], key="sim_estacao")
+
+    faixa_etaria = classificar_faixa_etaria(idade)
+    paciente = {
+        "IDADE": idade,
+        "FAIXA_ETARIA": faixa_etaria,
+        "ESTACAO": estacao,
+        "SUBCATEGORIA_CID": subcategoria,
+        "TIPO_ATENDIMENTO": tipo_atendimento,
+    }
+
+    try:
+        modelo_previsao = carregar_modelo_previsao()
+        dias_previstos = float(prever_demanda_2026(paciente, modelo=modelo_previsao)[0])
+        st.metric(
+            "Permanência estimada",
+            f"{dias_previstos:.1f} dias",
+            help=f"Faixa etária classificada automaticamente: {faixa_etaria}.",
+        )
+        st.caption(
+            "Estimativa média para o perfil informado. Como o modelo usa apenas variáveis "
+            "demográficas e sazonais (sem gravidade clínica), trata-se de uma referência de "
+            "planejamento, não de uma previsão individual precisa."
+        )
+    except FileNotFoundError:
+        st.warning(
+            "Base de modelagem não encontrada. Rode o pipeline (main.py --step pipeline) "
+            "para gerar gold_resp_ml.parquet antes de usar o simulador."
         )
 
 with aba_hospitais:
