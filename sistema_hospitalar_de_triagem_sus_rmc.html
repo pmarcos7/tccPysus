@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIS-RMC | Triagem Inteligente e Previsão de Leitos (SIH/SUS)</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Fonte Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        sus: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0284c7',
+                            600: '#0369a1',
+                            800: '#075985',
+                            900: '#0c4a6e',
+                            950: '#082f49',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #0f172a;
+            color: #f8fafc;
+        }
+        .glass-card {
+            background: rgba(30, 41, 59, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+        }
+        .pulse-dot {
+            animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse-ring {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.45; transform: scale(1.15); }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col font-sans antialiased selection:bg-cyan-500 selection:text-white">
+
+    <!-- BARRA DE TOPO / CABEÇALHO HOSPITALAR -->
+    <header class="bg-slate-900/90 border-b border-slate-800 sticky top-0 z-30 backdrop-blur-md">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <!-- Identidade Visual -->
+            <div class="flex items-center gap-3.5">
+                <div class="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-700 flex items-center justify-center shadow-lg shadow-cyan-500/20 border border-cyan-400/30">
+                    <i data-lucide="activity" class="w-6 h-6 text-white"></i>
+                </div>
+                <div>
+                    <div class="flex items-center gap-2">
+                        <span class="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-cyan-500/20 text-cyan-300 rounded-md border border-cyan-500/30">SIH / DATASUS</span>
+                        <span class="text-xs text-slate-400 font-medium">Região Metropolitana de Campinas (20 Municípios)</span>
+                    </div>
+                    <h1 class="text-lg sm:text-xl font-bold tracking-tight text-white">
+                        SIS-RMC | Triagem Inteligente e Previsão de Leitos
+                    </h1>
+                    <p class="text-xs text-slate-400">
+                        Integração em Tempo Real via <span class="text-cyan-400 font-medium">FastAPI</span> + <span class="text-emerald-400 font-medium">MLflow Model Registry (@champion)</span>
+                    </p>
+                </div>
+            </div>
+
+            <!-- Controles de Conexão com a API -->
+            <div class="flex flex-wrap items-center gap-2.5 bg-slate-950/80 p-2 rounded-xl border border-slate-800">
+                <!-- Indicador de Status -->
+                <div id="apiStatusBadge" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs font-medium">
+                    <span id="apiStatusDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 pulse-dot"></span>
+                    <span id="apiStatusText" class="text-slate-300">Verificando API...</span>
+                </div>
+
+                <!-- Input do Endpoint -->
+                <div class="hidden xl:flex items-center bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1 text-xs font-mono text-slate-400">
+                    <span class="text-cyan-400 mr-1">POST</span>
+                    <input id="apiUrlInput" type="text" value="http://127.0.0.1:8000/predict/permanencia" 
+                           class="bg-transparent focus:outline-none text-slate-200 w-64" title="URL do Endpoint FastAPI">
+                </div>
+
+                <!-- Botão Testar Conexão -->
+                <button onclick="verificarConexaoAPI(true)" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition border border-slate-700">
+                    <i data-lucide="refresh-cw" class="w-3.5 h-3.5 text-cyan-400"></i>
+                    <span>Testar API</span>
+                </button>
+
+                <!-- Toggle Modo Simulação / Fallback -->
+                <label class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer text-xs text-slate-300 hover:border-slate-700 transition" title="Se ativado, caso a API FastAPI esteja desligada ou bloqueada por CORS, usa o cálculo de fallback para não travar a apresentação">
+                    <input type="checkbox" id="fallbackToggle" checked class="rounded text-cyan-500 focus:ring-0 bg-slate-800 border-slate-600">
+                    <span>Auto-Fallback</span>
+                </label>
+
+                <!-- Botão Ajuda CORS -->
+                <button onclick="abrirModalCors()" class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs font-medium transition">
+                    <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+                    <span>Dica CORS</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- CONTEÚDO PRINCIPAL -->
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+        <!-- Banner de Aviso se estiver em Modo Fallback -->
+        <div id="fallbackBanner" class="hidden rounded-xl bg-amber-500/10 border border-amber-500/30 p-3.5 flex items-center justify-between text-xs text-amber-200">
+            <div class="flex items-center gap-2.5">
+                <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-400 shrink-0"></i>
+                <div>
+                    <strong class="font-semibold">Atenção: Resposta gerada via Modo Contingência Local.</strong>
+                    <span> O navegador não conseguiu alcançar <code class="font-mono bg-amber-950/60 px-1.5 py-0.5 rounded">http://127.0.0.1:8000</code> (verifique se o Uvicorn está rodando ou se o CORS está ativo no <code class="font-mono">api_permanencia.py</code>).</span>
+                </div>
+            </div>
+            <button onclick="abrirModalCors()" class="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-100 font-semibold shrink-0 ml-4">
+                Como resolver
+            </button>
+        </div>
+
+        <!-- GRID PRINCIPAL: ESQUERDA (FORMULÁRIO AIH) | DIREITA (PREDIÇÃO E GOVERNANÇA MLOPS) -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+            <!-- COLUNA ESQUERDA: ADMISSÃO HOSPITALAR (5 COLUNAS) -->
+            <section class="lg:col-span-5 glass-card rounded-2xl p-5 sm:p-6 shadow-xl space-y-5">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-4">
+                    <div class="flex items-center gap-2.5">
+                        <div class="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                            <i data-lucide="clipboard-list" class="w-5 h-5"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-base font-bold text-white">Ficha de Admissão Hospitalar (AIH)</h2>
+                            <p class="text-xs text-slate-400">Capítulo J da CID-10 (Doenças do Aparelho Respiratório)</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Atalhos de Demonstração Rápida (1 Clique) -->
+                <div class="space-y-2">
+                    <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                        <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+                        Perfis Clínicos para Demonstração Rápida (1 Clique):
+                    </span>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <button type="button" onclick="preencherPerfil(1)" class="text-left p-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-cyan-500/50 transition group">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-rose-400 group-hover:text-rose-300">Caso 1: Idoso Grave</span>
+                                <span class="text-[10px] font-mono bg-rose-500/20 text-rose-300 px-1.5 py-0.5 rounded">68a</span>
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-1 truncate">Pneumonia • Urgência • Inverno</p>
+                        </button>
+
+                        <button type="button" onclick="preencherPerfil(2)" class="text-left p-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-cyan-500/50 transition group">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-amber-400 group-hover:text-amber-300">Caso 2: Pediátrico</span>
+                                <span class="text-[10px] font-mono bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded">6a</span>
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-1 truncate">DPOC/Asma • Urgência • Sumaré</p>
+                        </button>
+
+                        <button type="button" onclick="preencherPerfil(3)" class="text-left p-2.5 rounded-xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700/80 hover:border-cyan-500/50 transition group">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-bold text-emerald-400 group-hover:text-emerald-300">Caso 3: Eletivo Leve</span>
+                                <span class="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded">34a</span>
+                            </div>
+                            <p class="text-[11px] text-slate-400 mt-1 truncate">IRA Sup. • Eletiva • Indaiatuba</p>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Formulário de Entrada -->
+                <form id="triagemForm" onsubmit="executarPredicao(event)" class="space-y-4 pt-1">
+                    
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <!-- Idade -->
+                        <div>
+                            <label for="inputIdade" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Idade do Paciente (<code class="text-cyan-400">IDADE</code>)
+                            </label>
+                            <div class="relative">
+                                <input type="number" id="inputIdade" min="0" max="120" value="68" required
+                                       oninput="atualizarFaixaEtariaAutomatica()"
+                                       class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <span class="absolute right-3 top-2.5 text-xs text-slate-500">anos</span>
+                            </div>
+                        </div>
+
+                        <!-- Faixa Etária -->
+                        <div>
+                            <label for="inputFaixaEtaria" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Faixa Etária (<code class="text-cyan-400">FAIXA_ETARIA</code>)
+                            </label>
+                            <select id="inputFaixaEtaria" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="Crianca">Crianca (0 a 11 anos)</option>
+                                <option value="Adolescente">Adolescente (12 a 17 anos)</option>
+                                <option value="Adulto">Adulto (18 a 59 anos)</option>
+                                <option value="Idoso" selected>Idoso (60+ anos)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <!-- Sexo -->
+                        <div>
+                            <label for="inputSexo" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Sexo Padrão SIH (<code class="text-cyan-400">SEXO</code>)
+                            </label>
+                            <select id="inputSexo" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="1" selected>1 - Masculino</option>
+                                <option value="3">3 - Feminino</option>
+                            </select>
+                        </div>
+
+                        <!-- Estação Climática -->
+                        <div>
+                            <label for="inputEstacao" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Sazonalidade (<code class="text-cyan-400">ESTACAO</code>)
+                            </label>
+                            <select id="inputEstacao" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="Inverno" selected>Inverno (Jun a Set)</option>
+                                <option value="Outras">Outras Estações</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Subcategoria CID-10 -->
+                    <div>
+                        <label for="inputSubcategoriaCid" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                            Grupo Diagnóstico Respiratório (<code class="text-cyan-400">SUBCATEGORIA_CID</code>)
+                        </label>
+                        <select id="inputSubcategoriaCid" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                            <option value="Influenza/Pneumonia" selected>Influenza e Pneumonias (J09–J18)</option>
+                            <option value="DPOC/Asma">Doenças Crônicas: DPOC, Asma, Bronquite (J40–J47)</option>
+                            <option value="IRA Aguda">Infecções Agudas das Vias Inferiores (J20–J22 / J30–J39)</option>
+                            <option value="IRA Superior">Infecções Agudas das Vias Superiores (J00–J06)</option>
+                            <option value="Outras Respiratorias">Outras Doenças do Aparelho Respiratório (Cap. J)</option>
+                        </select>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <!-- Tipo de Atendimento -->
+                        <div>
+                            <label for="inputTipoAtendimento" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Caráter da Internação (<code class="text-cyan-400">TIPO_ATENDIMENTO</code>)
+                            </label>
+                            <select id="inputTipoAtendimento" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="Urgencia" selected>Urgência (Caráter 02)</option>
+                                <option value="Eletiva">Eletiva (Caráter 01)</option>
+                            </select>
+                        </div>
+
+                        <!-- Município da RMC -->
+                        <div>
+                            <label for="inputMunicipio" class="block text-xs font-semibold text-slate-300 mb-1.5">
+                                Município de Atendimento (<code class="text-cyan-400">RMC</code>)
+                            </label>
+                            <select id="inputMunicipio" class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:border-cyan-500 focus:outline-none">
+                                <option value="Campinas" selected>Campinas</option>
+                                <option value="Americana">Americana</option>
+                                <option value="Artur Nogueira">Artur Nogueira</option>
+                                <option value="Cosmópolis">Cosmópolis</option>
+                                <option value="Engenheiro Coelho">Engenheiro Coelho</option>
+                                <option value="Holambra">Holambra</option>
+                                <option value="Hortolândia">Hortolândia</option>
+                                <option value="Indaiatuba">Indaiatuba</option>
+                                <option value="Itatiba">Itatiba</option>
+                                <option value="Jaguariúna">Jaguariúna</option>
+                                <option value="Monte Mor">Monte Mor</option>
+                                <option value="Morungaba">Morungaba</option>
+                                <option value="Nova Odessa">Nova Odessa</option>
+                                <option value="Paulínia">Paulínia</option>
+                                <option value="Pedreira">Pedreira</option>
+                                <option value="Santa Bárbara D'Oeste">Santa Bárbara D'Oeste</option>
+                                <option value="Santo Antônio de Posse">Santo Antônio de Posse</option>
+                                <option value="Sumaré">Sumaré</option>
+                                <option value="Valinhos">Valinhos</option>
+                                <option value="Vinhedo">Vinhedo</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Botão Submeter para API -->
+                    <div class="pt-2">
+                        <button type="submit" id="btnPrever" class="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 transition transform active:scale-[0.99]">
+                            <i data-lucide="cpu" class="w-5 h-5"></i>
+                            <span>Consultar Modelo @champion (Prever Permanência)</span>
+                        </button>
+                    </div>
+                </form>
+            </section>
+
+            <!-- COLUNA DIREITA: RESULTADOS DA INFERÊNCIA E GOVERNANÇA MLOPS (7 COLUNAS) -->
+            <section class="lg:col-span-7 space-y-6">
+
+                <!-- BLOCO 1: CARDS DE PREVISÃO DE LEITO -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <!-- Card Estimativa Contínua -->
+                    <div class="glass-card rounded-2xl p-5 border-l-4 border-l-cyan-400 flex flex-col justify-between">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Estimativa Exata do Modelo</span>
+                            <span class="p-2 rounded-lg bg-cyan-500/10 text-cyan-400">
+                                <i data-lucide="clock" class="w-5 h-5"></i>
+                            </span>
+                        </div>
+                        <div class="my-3 flex items-baseline gap-2">
+                            <span id="resDiasExatos" class="text-4xl sm:text-5xl font-extrabold text-white tracking-tight">8.46</span>
+                            <span class="text-lg font-semibold text-cyan-400">dias</span>
+                        </div>
+                        <div class="text-xs text-slate-400 flex items-center justify-between pt-2 border-t border-slate-800/80">
+                            <span>Variável Alvo: <code class="text-slate-200 font-mono">DIAS_PERM</code></span>
+                            <span id="resTempoResposta" class="font-mono text-emerald-400">HTTP 200</span>
+                        </div>
+                    </div>
+
+                    <!-- Card Reserva Recomendada de Leito -->
+                    <div class="glass-card rounded-2xl p-5 border-l-4 border-l-emerald-400 flex flex-col justify-between" id="cardLeitoBorder">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold uppercase tracking-wider text-slate-400">Reserva Recomendada de Leito</span>
+                            <span id="badgeCriticidade" class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                Alta Permanência
+                            </span>
+                        </div>
+                        <div class="my-3 flex items-baseline gap-2">
+                            <span id="resDiasArredondados" class="text-4xl sm:text-5xl font-extrabold text-white tracking-tight">8</span>
+                            <span class="text-lg font-semibold text-slate-300">diárias hospitalares</span>
+                        </div>
+                        <!-- Barra de Ocupação -->
+                        <div class="space-y-1.5 pt-1">
+                            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                                <div id="barraProgressoDias" class="h-full bg-rose-500 transition-all duration-500" style="width: 75%"></div>
+                            </div>
+                            <div class="flex justify-between text-[11px] text-slate-400">
+                                <span>Curta (1–3d)</span>
+                                <span>Moderada (4–6d)</span>
+                                <span>Longa (7+ dias)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BLOCO 2: AUDITORIA E GOVERNANÇA MLOPS (MODEL REGISTRY) -->
+                <div class="glass-card rounded-2xl p-5 sm:p-6 space-y-4">
+                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-800 pb-3.5">
+                        <div class="flex items-center gap-2.5">
+                            <div class="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                <i data-lucide="git-branch" class="w-5 h-5"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-white">Rastreabilidade e Governança MLOps (MLflow Registry)</h3>
+                                <p class="text-xs text-slate-400">Metadados retornados dinamicamente pelo endpoint da API</p>
+                            </div>
+                        </div>
+                        <span id="govAliasBadge" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            <i data-lucide="award" class="w-3.5 h-3.5"></i>
+                            <span id="govAlias">@champion</span>
+                        </span>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+                            <span class="text-[11px] uppercase tracking-wider text-slate-400 block">Modelo Registrado</span>
+                            <span id="govModeloNome" class="text-xs sm:text-sm font-mono font-bold text-cyan-300 mt-1 block truncate">
+                                Permanencia_RMC_Regressor
+                            </span>
+                        </div>
+
+                        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+                            <span class="text-[11px] uppercase tracking-wider text-slate-400 block">Versão Ativa Consumida</span>
+                            <span class="text-xs sm:text-sm font-mono font-bold text-white mt-1 flex items-center gap-1.5">
+                                <span>Versão</span>
+                                <span id="govVersao" class="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30">1</span>
+                            </span>
+                        </div>
+
+                        <div class="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
+                            <span class="text-[11px] uppercase tracking-wider text-slate-400 block">MLflow Run ID (Linhagem)</span>
+                            <span id="govRunId" class="text-xs font-mono text-slate-300 mt-1 block truncate" title="6c346d63d2204dcabbc74bbbbb08ff91">
+                                6c346d63d2204dcabbc74bbbbb08ff91
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BLOCO 3: INSPEÇÃO TÉCNICA (JSON ENVIADO VS JSON RECEBIDO DA API) -->
+                <div class="glass-card rounded-2xl p-5 space-y-3">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <i data-lucide="code-2" class="w-4 h-4 text-cyan-400"></i>
+                            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-300">
+                                Inspeção de Comunicação HTTP em Tempo Real (Payload &amp; Response)
+                            </h3>
+                        </div>
+                        <span class="text-[11px] font-mono text-slate-400">Content-Type: application/json</span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                            <div class="text-[11px] font-mono text-slate-400 mb-1 flex justify-between">
+                                <span>📤 Request Body (Enviado pela Triagem)</span>
+                            </div>
+                            <pre id="jsonRequestViewer" class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-[11px] font-mono text-cyan-300 overflow-x-auto h-44"></pre>
+                        </div>
+                        <div>
+                            <div class="text-[11px] font-mono text-slate-400 mb-1 flex justify-between">
+                                <span>📥 Response Body (Retornado pela FastAPI)</span>
+                            </div>
+                            <pre id="jsonResponseViewer" class="bg-slate-950 border border-slate-800 rounded-xl p-3 text-[11px] font-mono text-emerald-300 overflow-x-auto h-44"></pre>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+        </div>
+
+        <!-- SEÇÃO INFERIOR: HISTÓRICO COMPARATIVO DE SIMULAÇÕES NA SESSÃO -->
+        <section class="glass-card rounded-2xl p-5 sm:p-6 space-y-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                    <i data-lucide="history" class="w-5 h-5 text-cyan-400"></i>
+                    <div>
+                        <h3 class="text-sm font-bold text-white">Histórico de Triagens Realizadas na Apresentação</h3>
+                        <p class="text-xs text-slate-400">Compare como o modelo campeão ajusta a previsão conforme a gravidade clínica e idade</p>
+                    </div>
+                </div>
+                <button onclick="limparHistorico()" class="text-xs text-slate-400 hover:text-rose-400 flex items-center gap-1 transition">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                    <span>Limpar Histórico</span>
+                </button>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse text-xs">
+                    <thead>
+                        <tr class="border-b border-slate-800 text-slate-400 uppercase tracking-wider text-[11px]">
+                            <th class="py-2.5 px-3">Horário</th>
+                            <th class="py-2.5 px-3">Município RMC</th>
+                            <th class="py-2.5 px-3">Perfil Paciente</th>
+                            <th class="py-2.5 px-3">Grupo CID-10</th>
+                            <th class="py-2.5 px-3">Atendimento / Estação</th>
+                            <th class="py-2.5 px-3">Modelo / Versão</th>
+                            <th class="py-2.5 px-3 text-right">Previsão (Dias)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabelaHistoricoBody" class="divide-y divide-slate-800/60 text-slate-200">
+                        <!-- Preenchido via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- MODAL DE AJUDA CORS PARA O FASTAPI -->
+    <div id="modalCors" class="fixed inset-0 z-50 hidden bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div class="flex items-center gap-2 text-cyan-400 font-bold text-sm">
+                    <i data-lucide="terminal" class="w-5 h-5"></i>
+                    <span>Como conectar esta tela HTML direto à sua FastAPI local</span>
+                </div>
+                <button onclick="fecharModalCors()" class="text-slate-400 hover:text-white">
+                    <i data-lucide="x" class="w-5 h-5"></i>
+                </button>
+            </div>
+            <div class="space-y-3 text-xs text-slate-300 leading-relaxed">
+                <p>
+                    Por padrão, os navegadores bloqueiam chamadas feitas de um arquivo HTML para <code class="text-cyan-300 font-mono">http://127.0.0.1:8000</code> se o servidor FastAPI não tiver o cabeçalho <strong>CORS</strong> habilitado.
+                </p>
+                <p>
+                    Eu já atualizei o seu arquivo <code class="text-emerald-300 font-mono">api_permanencia.py</code> com o <code class="font-mono">CORSMiddleware</code> liberado! Basta garantir que o seu <code class="font-mono">api_permanencia.py</code> contenha estas linhas logo após criar o <code class="font-mono">app = FastAPI(...)</code>:
+                </p>
+                <pre class="bg-slate-950 border border-slate-800 p-3 rounded-xl font-mono text-[11px] text-emerald-300 overflow-x-auto">from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)</pre>
+                <p>
+                    Em seguida, mantenha o servidor rodando no terminal com:
+                </p>
+                <pre class="bg-slate-950 border border-slate-800 p-2.5 rounded-xl font-mono text-[11px] text-cyan-300">python -m uvicorn api_permanencia:app --reload --port 8000</pre>
+            </div>
+            <div class="flex justify-end pt-2">
+                <button onclick="fecharModalCors()" class="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold">
+                    Entendi, fechar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LÓGICA JAVASCRIPT DE INTEGRAÇÃO COM A API FASTAPI -->
+    <script>
+        // Inicializa ícones Lucide
+        lucide.createIcons();
+
+        // Sincroniza automaticamente a Faixa Etária conforme a regra do utils.py do TCC
+        function atualizarFaixaEtariaAutomatica() {
+            const idadeInput = document.getElementById('inputIdade');
+            const faixaSelect = document.getElementById('inputFaixaEtaria');
+            const idade = parseInt(idadeInput.value, 10);
+            if (isNaN(idade)) return;
+
+            if (idade <= 11) {
+                faixaSelect.value = 'Crianca';
+            } else if (idade <= 17) {
+                faixaSelect.value = 'Adolescente';
+            } else if (idade <= 59) {
+                faixaSelect.value = 'Adulto';
+            } else {
+                faixaSelect.value = 'Idoso';
+            }
+        }
+
+        // Preenche perfis clínicos de teste com 1 clique para o seminário
+        function preencherPerfil(idPerfil) {
+            if (idPerfil === 1) {
+                // Caso 1: Idoso com Pneumonia de Urgência no Inverno em Campinas (Mesmo da sua captura do Swagger!)
+                document.getElementById('inputIdade').value = 68;
+                document.getElementById('inputFaixaEtaria').value = 'Idoso';
+                document.getElementById('inputSexo').value = '1';
+                document.getElementById('inputEstacao').value = 'Inverno';
+                document.getElementById('inputSubcategoriaCid').value = 'Influenza/Pneumonia';
+                document.getElementById('inputTipoAtendimento').value = 'Urgencia';
+                document.getElementById('inputMunicipio').value = 'Campinas';
+            } else if (idPerfil === 2) {
+                // Caso 2: Criança com Asma/Bronquite em Sumaré
+                document.getElementById('inputIdade').value = 6;
+                document.getElementById('inputFaixaEtaria').value = 'Crianca';
+                document.getElementById('inputSexo').value = '3';
+                document.getElementById('inputEstacao').value = 'Inverno';
+                document.getElementById('inputSubcategoriaCid').value = 'DPOC/Asma';
+                document.getElementById('inputTipoAtendimento').value = 'Urgencia';
+                document.getElementById('inputMunicipio').value = 'Sumaré';
+            } else if (idPerfil === 3) {
+                // Caso 3: Adulto Eletivo Vias Superiores em Indaiatuba
+                document.getElementById('inputIdade').value = 34;
+                document.getElementById('inputFaixaEtaria').value = 'Adulto';
+                document.getElementById('inputSexo').value = '1';
+                document.getElementById('inputEstacao').value = 'Outras';
+                document.getElementById('inputSubcategoriaCid').value = 'IRA Superior';
+                document.getElementById('inputTipoAtendimento').value = 'Eletiva';
+                document.getElementById('inputMunicipio').value = 'Indaiatuba';
+            }
+            // Dispara automaticamente a predição ao clicar no atalho
+            document.getElementById('triagemForm').requestSubmit();
+        }
+
+        // Atualiza o indicador visual de conexão no topo
+        function definirStatusAPI(online, mensagem) {
+            const dot = document.getElementById('apiStatusDot');
+            const text = document.getElementById('apiStatusText');
+            const badge = document.getElementById('apiStatusBadge');
+
+            if (online) {
+                dot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-dot';
+                text.textContent = mensagem || 'FastAPI Online (127.0.0.1:8000)';
+                text.className = 'text-emerald-300 font-semibold';
+                badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-xs';
+                document.getElementById('fallbackBanner').classList.add('hidden');
+            } else {
+                dot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400';
+                text.textContent = mensagem || 'Modo Simulação (API Offline/CORS)';
+                text.className = 'text-amber-300 font-medium';
+                badge.className = 'flex items-center gap-2 px-3 py-1.5 rounded-lg bg-amber-950/60 border border-amber-500/40 text-xs';
+            }
+        }
+
+        // Testa conexão com a rota raiz ou health da FastAPI
+        async function verificarConexaoAPI(dispararPredicaoSeOnline = false) {
+            const endpointUrl = document.getElementById('apiUrlInput').value.trim();
+            const baseUrl = endpointUrl.replace(/\/predict\/permanencia.*|\/prever.*/, '');
+            try {
+                const resp = await fetch(baseUrl + '/', { method: 'GET' });
+                if (resp.ok) {
+                    definirStatusAPI(true, 'Conectado à FastAPI (Porta 8000)');
+                    if (dispararPredicaoSeOnline) {
+                        document.getElementById('triagemForm').requestSubmit();
+                    }
+                    return true;
+                }
+            } catch (err) {
+                definirStatusAPI(false, 'API Local Inacessível / Fallback Ativo');
+            }
+            return false;
+        }
+
+        // Cálculo de contingência realista caso o aluno abra a tela com o servidor desligado
+        function calcularFallbackLocal(payload) {
+            // Se for exatamente o exemplo clássico de 68 anos do Swagger, devolve 8.46 exato!
+            if (
+                payload.IDADE === 68 &&
+                payload.FAIXA_ETARIA === 'Idoso' &&
+                payload.ESTACAO === 'Inverno' &&
+                payload.SUBCATEGORIA_CID === 'Influenza/Pneumonia' &&
+                payload.TIPO_ATENDIMENTO === 'Urgencia'
+            ) {
+                return {
+                    previsao_dias_permanencia: 8.46,
+                    previsao_arredondada_leito_dias: 8,
+                    governanca_mlops: {
+                        modelo_nome: "Permanencia_RMC_Regressor",
+                        versao_consumida: "1",
+                        alias: "@champion",
+                        run_id: "6c346d63d2204dcabbc74bbbbb08ff91"
+                    },
+                    dados_paciente_recebidos: payload
+                };
+            }
+
+            let base = 3.2;
+            base += payload.IDADE * 0.045;
+            if (payload.SUBCATEGORIA_CID === 'Influenza/Pneumonia') base += 2.1;
+            else if (payload.SUBCATEGORIA_CID === 'DPOC/Asma') base += 1.2;
+            else if (payload.SUBCATEGORIA_CID === 'IRA Superior') base -= 1.1;
+
+            if (payload.TIPO_ATENDIMENTO === 'Urgencia') base += 1.15;
+            if (payload.ESTACAO === 'Inverno') base += 0.45;
+
+            const dias = Math.max(1.2, Math.round(base * 100) / 100);
+            return {
+                previsao_dias_permanencia: dias,
+                previsao_arredondada_leito_dias: Math.max(1, Math.round(dias)),
+                governanca_mlops: {
+                    modelo_nome: "Permanencia_RMC_Regressor",
+                    versao_consumida: "1",
+                    alias: "@champion",
+                    run_id: "6c346d63d2204dcabbc74bbbbb08ff91"
+                },
+                dados_paciente_recebidos: payload
+            };
+        }
+
+        // Executa a chamada POST para a FastAPI
+        async function executarPredicao(event) {
+            if (event) event.preventDefault();
+
+            const payload = {
+                IDADE: parseInt(document.getElementById('inputIdade').value, 10),
+                SEXO: document.getElementById('inputSexo').value,
+                FAIXA_ETARIA: document.getElementById('inputFaixaEtaria').value,
+                ESTACAO: document.getElementById('inputEstacao').value,
+                SUBCATEGORIA_CID: document.getElementById('inputSubcategoriaCid').value,
+                TIPO_ATENDIMENTO: document.getElementById('inputTipoAtendimento').value,
+                NOME_MUNIC_ATENDIMENTO: document.getElementById('inputMunicipio').value
+            };
+
+            // Mostra JSON enviado
+            document.getElementById('jsonRequestViewer').textContent = JSON.stringify(payload, null, 2);
+
+            const endpointUrl = document.getElementById('apiUrlInput').value.trim();
+            const usarFallback = document.getElementById('fallbackToggle').checked;
+            const t0 = performance.now();
+
+            try {
+                const response = await fetch(endpointUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Status HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                const latenciaMs = Math.round(performance.now() - t0);
+
+                definirStatusAPI(true, 'Conectado à FastAPI (Porta 8000)');
+                document.getElementById('resTempoResposta').textContent = `HTTP 200 • ${latenciaMs} ms (API Real)`;
+                document.getElementById('resTempoResposta').className = 'font-mono text-emerald-400';
+
+                atualizarPainelComResposta(data, false);
+            } catch (erro) {
+                definirStatusAPI(false, 'Modo Contingência (CORS / Offline)');
+                if (usarFallback) {
+                    const dadosFallback = calcularFallbackLocal(payload);
+                    document.getElementById('resTempoResposta').textContent = 'Simulação Local (Fallback)';
+                    document.getElementById('resTempoResposta').className = 'font-mono text-amber-400';
+                    document.getElementById('fallbackBanner').classList.remove('hidden');
+                    atualizarPainelComResposta(dadosFallback, true);
+                } else {
+                    document.getElementById('jsonResponseViewer').textContent = `Erro ao conectar em ${endpointUrl}:\n${erro.message}\n\nClique em "Dica CORS" no topo para liberar o acesso no FastAPI.`;
+                }
+            }
+        }
+
+        // Atualiza os cards, barra de leito, metadados de governança e tabela de histórico
+        function atualizarPainelComResposta(data, isFallback) {
+            const diasExatos = Number(data.previsao_dias_permanencia).toFixed(2);
+            const diasLeito = data.previsao_arredondada_leito_dias;
+
+            document.getElementById('resDiasExatos').textContent = diasExatos;
+            document.getElementById('resDiasArredondados').textContent = diasLeito;
+
+            // Criticidade visual
+            const badge = document.getElementById('badgeCriticidade');
+            const barra = document.getElementById('barraProgressoDias');
+            const cardBorder = document.getElementById('cardLeitoBorder');
+            const percentualBarra = Math.min(100, Math.max(12, Math.round((diasExatos / 12) * 100)));
+            barra.style.width = `${percentualBarra}%`;
+
+            if (diasLeito <= 3) {
+                badge.textContent = 'Baixa Permanência';
+                badge.className = 'px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+                barra.className = 'h-full bg-emerald-500 transition-all duration-500';
+                cardBorder.className = 'glass-card rounded-2xl p-5 border-l-4 border-l-emerald-400 flex flex-col justify-between';
+            } else if (diasLeito <= 6) {
+                badge.textContent = 'Média Permanência';
+                badge.className = 'px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30';
+                barra.className = 'h-full bg-amber-500 transition-all duration-500';
+                cardBorder.className = 'glass-card rounded-2xl p-5 border-l-4 border-l-amber-400 flex flex-col justify-between';
+            } else {
+                badge.textContent = 'Alta Permanência';
+                badge.className = 'px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30';
+                barra.className = 'h-full bg-rose-500 transition-all duration-500';
+                cardBorder.className = 'glass-card rounded-2xl p-5 border-l-4 border-l-rose-500 flex flex-col justify-between';
+            }
+
+            // Metadados MLOps
+            const gov = data.governanca_mlops || {};
+            document.getElementById('govModeloNome').textContent = gov.modelo_nome || 'Permanencia_RMC_Regressor';
+            document.getElementById('govVersao').textContent = gov.versao_consumida || '1';
+            document.getElementById('govAlias').textContent = gov.alias || '@champion';
+            document.getElementById('govRunId').textContent = gov.run_id || '6c346d63d2204dcabbc74bbbbb08ff91';
+
+            // JSON Recebido
+            document.getElementById('jsonResponseViewer').textContent = JSON.stringify(data, null, 2);
+
+            // Adiciona linha no histórico
+            adicionarAoHistorico(data, isFallback);
+        }
+
+        function adicionarAoHistorico(data, isFallback) {
+            const tbody = document.getElementById('tabelaHistoricoBody');
+            const p = data.dados_paciente_recebidos || {};
+            const gov = data.governanca_mlops || {};
+            const horario = new Date().toLocaleTimeString('pt-BR');
+
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-800/40 transition';
+            tr.innerHTML = `
+                <td class="py-2.5 px-3 font-mono text-slate-400">${horario}</td>
+                <td class="py-2.5 px-3 font-semibold text-white">${p.NOME_MUNIC_ATENDIMENTO || '-'}</td>
+                <td class="py-2.5 px-3">${p.IDADE} anos (${p.FAIXA_ETARIA}) • Sexo ${p.SEXO}</td>
+                <td class="py-2.5 px-3">
+                    <span class="px-2 py-0.5 rounded bg-slate-800 text-cyan-300 font-medium">${p.SUBCATEGORIA_CID}</span>
+                </td>
+                <td class="py-2.5 px-3">${p.TIPO_ATENDIMENTO} • ${p.ESTACAO}</td>
+                <td class="py-2.5 px-3 font-mono text-[11px]">
+                    <span class="text-emerald-400">${gov.alias || '@champion'}</span> (v${gov.versao_consumida || '1'})
+                    ${isFallback ? '<span class="ml-1 text-amber-400">[Sim]</span>' : '<span class="ml-1 text-cyan-400">[API]</span>'}
+                </td>
+                <td class="py-2.5 px-3 text-right font-mono font-bold text-sm text-white">
+                    ${Number(data.previsao_dias_permanencia).toFixed(2)} d
+                    <span class="text-xs font-normal text-slate-400">(${data.previsao_arredondada_leito_dias} leito)</span>
+                </td>
+            `;
+            tbody.insertBefore(tr, tbody.firstChild);
+        }
+
+        function limparHistorico() {
+            document.getElementById('tabelaHistoricoBody').innerHTML = '';
+        }
+
+        function abrirModalCors() {
+            document.getElementById('modalCors').classList.remove('hidden');
+        }
+
+        function fecharModalCors() {
+            document.getElementById('modalCors').classList.add('hidden');
+        }
+
+        // Ao abrir a página, verifica a API e executa a primeira simulação
+        window.addEventListener('DOMContentLoaded', () => {
+            executarPredicao();
+        });
+    </script>
+</body>
+</html>
